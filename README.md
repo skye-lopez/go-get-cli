@@ -1,6 +1,15 @@
 # go-get-cli
 CLI tooling for Go Get to make it a bit more enjoyable.
 
+## usage 
+
+### Fetch the index 
+Fetch the latest index. This is recommended to be done upon installing the CLI tool as the initial fetch can take a bit. This can be called again whenever you want a fresh version of the index.
+
+```
+go-get-cli fetch
+```
+
 ### notes and planning 
 
 #### Features
