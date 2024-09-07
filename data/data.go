@@ -1,25 +1,16 @@
-/*
-* @authors: Aria Lopez github(skye-lopez) email(aria.lopez.dev@gmail.com)
-*
-* <Data>
-*   Data manager for both the global index and the context based awesome-go packages.
-*   Global index source: << https://index.golang.org/ >>
-*   Awesome go source: << https://github.com/avelino/awesome-go >>
- */
-
-// TODO: Errors should eventaully bubble up to the UI in a nice way.
-
 package data
 
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/syndtr/goleveldb/leveldb"
 )
 
 type Store struct {
@@ -33,42 +24,30 @@ type GoIndexEntry struct {
 	Timestamp string `json:"Timestamp"`
 }
 
-func Init() {
-	var existing Store
-
-	// If we dont have the file just make a base state
-	if _, err := os.Stat("data.json"); errors.Is(err, os.ErrNotExist) {
-		baseState := Store{
-			GoIndex:       make(map[string]GoIndexEntry, 0),
-			LastWriteTime: "2019-04-10T19:08:52.997264Z",
-		}
-		existing = baseState
-	} else {
-		// Otherwise read in saved state.
-		file, err := os.ReadFile("data.json")
-		if err != nil {
-			panic(err)
-		}
-		json.Unmarshal(file, &existing)
-	}
-
+func Init(db *leveldb.DB) {
 	// Collect data
-	ParseGoIndex(existing.GoIndex, existing.LastWriteTime)
+	ParseGoIndex(db)
 
-	// Store data with new LastWriteTime
-	lastWrite := time.Now().Format(time.RFC3339Nano)
-	existing.LastWriteTime = lastWrite
+	// Update lastWriteTime
+	newTime := time.Now().Format(time.RFC3339Nano)
+	db.Put([]byte("lastWriteTime"), []byte(newTime), nil)
 
-	jsonData, err := json.Marshal(existing)
-	if err != nil {
-		panic(err)
-	}
-	os.WriteFile("data.json", jsonData, os.ModePerm)
+	fmt.Println("Done fetching index data! Enjoy.")
 }
 
-func ParseGoIndex(existingMap map[string]GoIndexEntry, lastTime string) {
+func ParseGoIndex(db *leveldb.DB) {
 	startTime := time.Now()
-	endTime, err := time.Parse(time.RFC3339Nano, lastTime)
+	var endTimeString string
+	storedEndTime, err := db.Get([]byte("lastWriteTime"), nil)
+	if errors.Is(err, leveldb.ErrNotFound) {
+		fmt.Println("Fetching index data... Its your first time so this could take awhile, please be patient! :)")
+		endTimeString = "2019-04-10T19:08:52.997264Z"
+	} else {
+		endTimeString = string(storedEndTime)
+		fmt.Println("Fetching new index data...")
+	}
+
+	endTime, err := time.Parse(time.RFC3339Nano, endTimeString)
 	if err != nil {
 		panic(err)
 	}
@@ -84,51 +63,46 @@ func ParseGoIndex(existingMap map[string]GoIndexEntry, lastTime string) {
 		startTime = startTime.Add(-step)
 	}
 
-	// NOTE: chan size is also variable, would be nice to have a better way of calculating this.
-	// Example: len(urls)*2000=max length it could ever be.
-	entries := make(chan GoIndexEntry, 1000000)
+	maxChanSize := len(urls) * 2000
+	entries := make(chan GoIndexEntry, maxChanSize)
 	var wg sync.WaitGroup
-	for i, url := range urls {
-		if i < 10 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+	for _, url := range urls {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 
-				// Interesting race condition with TCP io.ReadAll...
-				time.Sleep(time.Millisecond * 50)
+			// Interesting race condition with TCP io.ReadAll...
+			time.Sleep(time.Millisecond * 50)
 
-				resp, err := http.Get(url)
-				if err != nil {
-					return
-				}
-				defer resp.Body.Close()
+			resp, err := http.Get(url)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
 
-				body, err := io.ReadAll(resp.Body)
-				if err != nil {
-					return
-				}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return
+			}
 
-				rawEntries := strings.Split(string(body), "\n")
-				for _, re := range rawEntries {
-					e := GoIndexEntry{}
+			rawEntries := strings.Split(string(body), "\n")
+			for _, re := range rawEntries {
+				e := GoIndexEntry{}
 
-					json.Unmarshal([]byte(re), &e)
-					entries <- e
-				}
-			}()
-		}
+				json.Unmarshal([]byte(re), &e)
+				entries <- e
+			}
+		}()
 	}
 
 	wg.Wait()
 	close(entries)
 
 	for e := range entries {
-		if len(e.Path) <= 1 {
-			continue
-		}
-		_, exists := existingMap[e.Path]
-		if !exists {
-			existingMap[e.Path] = e
+		_, err := db.Get([]byte(e.Path), nil)
+		if errors.Is(err, leveldb.ErrNotFound) {
+			// NOTE: For now we arent going to store the actual version of the package, this would be an easy change with some kind of delimiter
+			db.Put([]byte(e.Path), []byte(e.Path), nil)
 		}
 	}
 }

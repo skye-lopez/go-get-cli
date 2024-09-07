@@ -13,7 +13,6 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
-	// setup here (this gets run regardless of command)
 }
 
 func Execute() {
